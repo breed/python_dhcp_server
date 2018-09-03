@@ -1,4 +1,6 @@
 #!/usr/bin/python3
+
+import click
 import time
 import threading
 import struct
@@ -221,9 +223,6 @@ class DHCPServerConfiguration(object):
     dhcp_acknowledge_after_seconds = 10
     length_of_transaction = 40
 
-    network = '192.168.173.0'
-    broadcast_address = '255.255.255.255'
-    subnet_mask = '255.255.255.0'
     router = None # list of ips
     # 1 day is 86400
     ip_address_lease_time = 300 # seconds
@@ -233,6 +232,10 @@ class DHCPServerConfiguration(object):
 
     debug = lambda *args, **kw: None
 
+    def __init__(self, ip, subnet_mask):
+        self.ip = ip
+        self.subnet_mask = subnet_mask
+        self.network = network_from_ip_subnet(ip, subnet_mask)
     def load(self, file):
         with open(file) as f:
             exec(f.read(), self.__dict__)
@@ -258,8 +261,16 @@ class DHCPServerConfiguration(object):
     def network_filter(self):
         return NETWORK(self.network, self.subnet_mask)
 
+
+def network_from_ip_subnet(ip, subnet_mask):
+    import socket
+    subnet_mask = struct.unpack('>I', socket.inet_aton(subnet_mask))[0]
+    ip = struct.unpack('>I', socket.inet_aton(ip))[0]
+    network = ip & subnet_mask
+    return socket.inet_ntoa(struct.pack('>I', network))
+
 def ip_addresses(network, subnet_mask):
-    import socket, struct
+    import socket
     subnet_mask = struct.unpack('>I', socket.inet_aton(subnet_mask))[0]
     network = struct.unpack('>I', socket.inet_aton(network))[0]
     network = network & subnet_mask
@@ -406,7 +417,7 @@ class DHCPServer(object):
         self.configuration = configuration
         self.socket = socket(type = SOCK_DGRAM)
         self.socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-        self.socket.bind(('', 67))
+        self.socket.bind((configuration.ip, 67))
         self.delay_worker = DelayWorker()
         self.closed = False
         self.transactions = collections.defaultdict(lambda: Transaction(self)) # id: transaction
@@ -494,7 +505,7 @@ class DHCPServer(object):
 
     @property
     def server_identifiers(self):
-        return get_host_ip_addresses()
+        return [self.configuration.ip]
 
     def broadcast(self, packet):
         self.configuration.debug('broadcasting:\n {}'.format(str(packet).replace('\n', '\n\t')))
@@ -537,13 +548,20 @@ class DHCPServer(object):
     def get_current_hosts(self):
         return sorted_hosts(self.hosts.get(last_used = GREATER(self.time_started)))
 
-if __name__ == '__main__':
-    configuration = DHCPServerConfiguration()
+
+@click.command()
+@click.option('--ip', metavar='addr', help='IP address to listen on', required=True)
+@click.option('--subnet_mask', metavar='mask', help='subnet mask', required=True)
+def do_dhcp(ip, subnet_mask):
+    configuration = DHCPServerConfiguration(ip, subnet_mask)
     configuration.debug = print
-    configuration.adjust_if_this_computer_is_a_router()
-    configuration.router #+= ['192.168.0.1']
     configuration.ip_address_lease_time = 60
     server = DHCPServer(configuration)
+
     for ip in server.configuration.all_ip_addresses():
         assert ip == server.configuration.network_filter()
     server.run()
+
+
+if __name__ == '__main__':
+    do_dhcp()
